@@ -13,6 +13,7 @@
 struct Client
 {
     int _clientSocket;
+    std::string _username;
 };
 
 std::vector<Client> _connectedPeers;
@@ -70,19 +71,31 @@ void Server::run()
         socklen_t clientSize = sizeof(clientAddr);
         int clientSocket = accept(_serverSocket, (struct sockaddr *)&clientAddr, &clientSize);
 
+        // get username from inital chunk
+        char buffer[1024];
+        ssize_t chunk = recv(clientSocket, buffer, sizeof(buffer), 0);
+        if (chunk <= 0)
+        {
+            throw std::runtime_error("Failed to recieve inital user chunk containg username");
+            return;
+        }
+
+        buffer[chunk] = '\0';
+
         std::thread clientThread(&Server::handleClient, this, clientSocket, clientAddr);
         clientThread.detach();
 
         // create new client to add to connectedPeers list
         Client newClient;
         newClient._clientSocket = clientSocket;
+        newClient._username = buffer;
 
         {
             std::lock_guard<std::mutex> lock(_peerMutex);
             _connectedPeers.push_back(newClient);
         }
 
-        std::cout << "Client: " << inet_ntoa(clientAddr.sin_addr) << " Connected\n";
+        std::cout << "Client: " << newClient._username << " Connected\n";
     }
 }
 
@@ -105,15 +118,28 @@ void Server::handleClient(int clientSocket, sockaddr_in clientAddr)
     // message buffer
     char buffer[1024];
 
-    // grab ip once
+    // grab ip and username once
     std::string clientIP = inet_ntoa(clientAddr.sin_addr);
+
+    std::string username;
+    {
+        std::lock_guard<std::mutex> lock(_peerMutex);
+        for (const auto &client : _connectedPeers)
+        {
+            if (client._clientSocket == clientSocket)
+            {
+                username = client._username;
+                break;
+            }
+        }
+    }
 
     while (true)
     {
         ssize_t chunk = recv(clientSocket, buffer, sizeof(buffer) - 1, 0);
         if (chunk <= 0)
         {
-            std::cout << "User: " << clientIP << " Disconnected\n";
+            std::cout << "User: " << username << " Disconnected\n";
 
             // close connection
             close(clientSocket);
@@ -137,7 +163,7 @@ void Server::handleClient(int clientSocket, sockaddr_in clientAddr)
         buffer[chunk] = '\0';
 
         // append sender ip to broadcast to others
-        std::string broadcastStr = clientIP + ": " + buffer;
+        std::string broadcastStr = username + ": " + buffer;
 
         BroadcastMessage(broadcastStr, clientSocket);
 

@@ -46,6 +46,12 @@ void Client::run()
         throw std::runtime_error("Connection Failure");
     }
 
+    std::cout << "Enter a username for this session\n";
+    std::string username;
+    std::cin >> username;
+
+    send(_clientSocket, username.c_str(), username.size(), 0);
+
     std::cout << "Connection Succesful\n";
 
     // create client thread
