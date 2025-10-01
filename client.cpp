@@ -61,10 +61,26 @@ void Client::run()
     std::string input;
     while (std::getline(std::cin, input))
     {
-        send(_clientSocket, input.c_str(), input.size(), 0);
-    }
+        if (input.rfind("/file", 0) == 0)
+        {
+            // parse file path after /file
 
-    close(_clientSocket);
+            // create file header and start sending
+        }
+        else
+        {
+            std::string payload = input;
+
+            // create messsage header
+            std::string msgHeader = "MSG|" + std::to_string(payload.length()) + "|";
+
+            // send header metadata
+            send(_clientSocket, msgHeader.c_str(), msgHeader.size(), 0);
+
+            // send payload
+            send(_clientSocket, payload.c_str(), payload.size(), 0);
+        }
+    }
 }
 
 int main()

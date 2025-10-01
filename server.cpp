@@ -71,6 +71,7 @@ void Server::run()
         socklen_t clientSize = sizeof(clientAddr);
         int clientSocket = accept(_serverSocket, (struct sockaddr *)&clientAddr, &clientSize);
 
+#pragma region FIX THIS
         // get username from inital chunk
         char buffer[1024];
         ssize_t chunk = recv(clientSocket, buffer, sizeof(buffer), 0);
@@ -79,6 +80,7 @@ void Server::run()
             throw std::runtime_error("Failed to recieve inital user chunk containg username");
             return;
         }
+#pragma endregion
 
         buffer[chunk] = '\0';
 
@@ -99,7 +101,7 @@ void Server::run()
     }
 }
 
-void Server::BroadcastMessage(std::string message, int senderSocket)
+void Server::broadcastMessage(std::string message, int senderSocket)
 {
     {
         std::lock_guard<std::mutex> lock(_peerMutex);
@@ -118,9 +120,7 @@ void Server::handleClient(int clientSocket, sockaddr_in clientAddr)
     // message buffer
     char buffer[1024];
 
-    // grab ip and username once
-    std::string clientIP = inet_ntoa(clientAddr.sin_addr);
-
+    // grab username once
     std::string username;
     {
         std::lock_guard<std::mutex> lock(_peerMutex);
@@ -136,39 +136,103 @@ void Server::handleClient(int clientSocket, sockaddr_in clientAddr)
 
     while (true)
     {
-        ssize_t chunk = recv(clientSocket, buffer, sizeof(buffer) - 1, 0);
-        if (chunk <= 0)
+
+        std::string incomingData;
+        int firstDelimiterIndex;
+        int secondDelimiterIndex;
+
+        // loop to build header contents
+        while (true)
         {
-            std::cout << "User: " << username << " Disconnected\n";
+            ssize_t chunk = recv(clientSocket, buffer, sizeof(buffer) - 1, 0);
 
-            // close connection
-            close(clientSocket);
-
+            // users disconnected
+            if (chunk <= 0)
             {
-                std::lock_guard<std::mutex> lock(_peerMutex);
+                std::cout << "User: " << username << " Disconnected\n";
 
-                // remove from peer list
-                _connectedPeers.erase(
-                    std::remove_if(_connectedPeers.begin(), _connectedPeers.end(),
-                                   [clientSocket](const Client &c)
-                                   {
-                                       return c._clientSocket == clientSocket;
-                                   }),
-                    _connectedPeers.end());
+                // close connection
+                close(clientSocket);
+
+                // remove client from peerlist
+                {
+                    std::lock_guard<std::mutex> lock(_peerMutex);
+
+                    // remove from peer list
+                    _connectedPeers.erase(
+                        std::remove_if(_connectedPeers.begin(), _connectedPeers.end(),
+                                       [clientSocket](const Client &c)
+                                       {
+                                           return c._clientSocket == clientSocket;
+                                       }),
+                        _connectedPeers.end());
+                }
+
+                return;
             }
 
-            break;
+            buffer[chunk] = '\0';
+            incomingData.append(buffer);
+
+            firstDelimiterIndex = incomingData.find("|");
+            secondDelimiterIndex = incomingData.find("|", firstDelimiterIndex + 1);
+
+            // check that we got the header
+            if (secondDelimiterIndex != std::string::npos)
+            {
+                break;
+            }
         }
 
-        buffer[chunk] = '\0';
+        // check that we actually got a correct header
+        if (firstDelimiterIndex == std::string::npos || secondDelimiterIndex == std::string::npos)
+        {
+            throw std::runtime_error("Fatal header parsing error");
+            return;
+        }
 
-        // append sender ip to broadcast to others
-        std::string broadcastStr = username + ": " + buffer;
+        // extract header segments
+        std::string payloadType = incomingData.substr(0, firstDelimiterIndex);
 
-        BroadcastMessage(broadcastStr, clientSocket);
-
-        std::cout << clientIP << ": " << buffer << std::endl;
+        if (payloadType == "MSG")
+        {
+            handleMessage(username, incomingData, firstDelimiterIndex, secondDelimiterIndex, buffer, sizeof(buffer), clientSocket);
+        }
     }
+}
+
+void Server::handleMessage(
+    std::string username,
+    std::string incomingData,
+    int firstDelimiterIndex,
+    int secondDelimiterIndex,
+    char buffer[],
+    int bufferSize,
+    int clientSocket)
+{
+    std::string payloadLengthStr = incomingData.substr(firstDelimiterIndex + 1, secondDelimiterIndex - firstDelimiterIndex - 1);
+    int payloadLength = std::stoi(payloadLengthStr);
+
+    // check if header already contains payload
+    std::string payload = incomingData.substr(secondDelimiterIndex + 1);
+
+    // loop again to get any missing payload data
+    while (payload.length() < payloadLength)
+    {
+        ssize_t chunk = recv(clientSocket, buffer, bufferSize, 0);
+        if (chunk <= 0)
+            break;
+
+        buffer[chunk] = '\0';
+        payload.append(buffer);
+    }
+
+    // append senders username to broadcast to others
+    std::string broadcastStr = username + ": " + payload;
+
+    broadcastMessage(broadcastStr, clientSocket);
+
+    std::cout << username << ": " << payload << std::endl;
 }
 
 int main()
