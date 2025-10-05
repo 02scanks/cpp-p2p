@@ -71,7 +71,6 @@ void Server::run()
         socklen_t clientSize = sizeof(clientAddr);
         int clientSocket = accept(_serverSocket, (struct sockaddr *)&clientAddr, &clientSize);
 
-#pragma region FIX THIS
         // get username from inital chunk
         char buffer[1024];
         ssize_t chunk = recv(clientSocket, buffer, sizeof(buffer), 0);
@@ -80,7 +79,6 @@ void Server::run()
             throw std::runtime_error("Failed to recieve inital user chunk containg username");
             return;
         }
-#pragma endregion
 
         buffer[chunk] = '\0';
 

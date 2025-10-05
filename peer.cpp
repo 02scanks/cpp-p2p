@@ -1,0 +1,332 @@
+#include "peer.hpp"
+#include <iostream>
+#include <vector>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <thread>
+#include <fstream>
+#include <unistd.h>
+#include <algorithm>
+#include <mutex>
+#include <string>
+#include <algorithm>
+
+int main()
+{
+    Peer peer;
+
+    std::cout << "Enter a username for this session\n";
+    std::string username;
+    std::cin >> username;
+    std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+
+    peer.setUsername(username);
+
+    std::cout << "Enter a port to listen on\n";
+    int port;
+    std::cin >> port;
+    std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+
+    std::cout << "Connect to peer? (y/n): " << std::endl;
+    std::string choice;
+    std::getline(std::cin, choice);
+    if (choice == "y")
+    {
+        std::cout << "Enter peer IP: ";
+        std::string ip;
+        std::getline(std::cin, ip);
+
+        std::cout << "Enter peer port: ";
+        int peerPort;
+        std::cin >> peerPort;
+        std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+
+        peer.connectToPeer(ip, peerPort, username);
+    }
+
+    std::thread listeningThread(&Peer::startListening, &peer, port);
+    listeningThread.detach();
+
+    peer.userInputLoop();
+
+    return 0;
+}
+
+void Peer::setUsername(std::string username)
+{
+    Peer::_username = username;
+}
+
+void Peer::startListening(int port)
+{
+    std::cout << "Listening Initialized" << std::endl;
+
+    _listeningSocket = socket(AF_INET, SOCK_STREAM, 0);
+    if (_listeningSocket < 0)
+    {
+        throw std::runtime_error("Failed to create listening socket");
+    }
+
+    sockaddr_in listeninAddr{};
+    listeninAddr.sin_family = AF_INET;
+    listeninAddr.sin_addr.s_addr = INADDR_ANY;
+    listeninAddr.sin_port = htons(port);
+
+    int opt = 1;
+    if (setsockopt(_listeningSocket, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0)
+    {
+        throw std::runtime_error("setsockopt failed");
+    }
+
+    int bindStatus = bind(_listeningSocket, (struct sockaddr *)&listeninAddr, sizeof(listeninAddr));
+    if (bindStatus < 0)
+    {
+        throw std::runtime_error("Failed to bind to listening socket");
+    }
+
+    // start listening
+    int listenStatus = listen(_listeningSocket, 5);
+    if (listenStatus < 0)
+    {
+        throw std::runtime_error("Failed to start listening");
+    }
+
+    std::cout << "Awaiting Connections...." << std::endl;
+
+    while (true)
+    {
+        sockaddr_in peerAddr{};
+        socklen_t peerSize = sizeof(peerAddr);
+        int peerSocket = accept(_listeningSocket, (struct sockaddr *)&peerAddr, &peerSize);
+
+        // get username from inital chunk
+        char buffer[1024];
+        ssize_t chunk = recv(peerSocket, buffer, sizeof(buffer), 0);
+        if (chunk <= 0)
+        {
+            throw std::runtime_error("Failed to recieve inital user chunk containg username");
+            return;
+        }
+
+        buffer[chunk] = '\0';
+
+        // send your username back to them
+        send(peerSocket, _username.c_str(), _username.size(), 0);
+
+        // create new peer to add to peer list
+        PeerConnection PeerConnection;
+        PeerConnection.socket = peerSocket;
+        PeerConnection.username = buffer;
+
+        {
+            std::lock_guard<std::mutex> lock(_peerMutex);
+            _peers.push_back(PeerConnection);
+        }
+
+        // create per peer thread for handling incoming messages
+        std::thread peerThread(&Peer::handlePeerConnection, this, peerSocket);
+        peerThread.detach();
+
+        std::cout << "Client: " << PeerConnection.username << " Connected\n";
+    }
+}
+
+void Peer::connectToPeer(std::string ip, int port, std::string username)
+{
+    // create client socket
+    int connectingSocket = socket(AF_INET, SOCK_STREAM, 0);
+    if (connectingSocket < 0)
+    {
+        throw std::runtime_error("TCP Socket Failure");
+    }
+
+    // create addressc
+    sockaddr_in serverAddr{};
+    serverAddr.sin_family = AF_INET;
+    serverAddr.sin_port = htons(port);
+    inet_pton(AF_INET, ip.c_str(), &serverAddr.sin_addr);
+
+    if (connect(connectingSocket, (sockaddr *)&serverAddr, sizeof(serverAddr)) < 0)
+    {
+        throw std::runtime_error("Connection Failure");
+    }
+
+    std::cout << "Connection Succesful\n";
+
+    // send your username
+    char buffer[1024];
+    send(connectingSocket, username.c_str(), username.size(), 0);
+
+    // recieve theirs back
+    ssize_t chunk = recv(connectingSocket, buffer, sizeof(buffer), 0);
+    if (chunk <= 0)
+    {
+        throw std::runtime_error("Failed to recieve inital user chunk containg username");
+        return;
+    }
+    buffer[chunk] = '\0';
+
+    // add them to peer list
+    PeerConnection newPeer;
+    newPeer.socket = connectingSocket;
+    newPeer.username = buffer;
+
+    {
+        std::lock_guard<std::mutex> lock(_peerMutex);
+        _peers.push_back(newPeer);
+    }
+
+    // create client thread
+    std::thread receivingThread(&Peer::handlePeerConnection, this, connectingSocket);
+    receivingThread.detach();
+}
+
+void Peer::handlePeerConnection(int socket)
+{
+    // message buffer
+    char buffer[1024];
+
+    // grab username once
+    std::string username;
+    {
+        std::lock_guard<std::mutex> lock(Peer::_peerMutex);
+        for (const auto &peer : _peers)
+        {
+            if (peer.socket == socket)
+            {
+                username = peer.username;
+                break;
+            }
+        }
+    }
+
+    while (true)
+    {
+
+        std::string incomingData;
+        int firstDelimiterIndex;
+        int secondDelimiterIndex;
+
+        // loop to build header contents
+        while (true)
+        {
+            ssize_t chunk = recv(socket, buffer, sizeof(buffer) - 1, 0);
+
+            // users disconnected
+            if (chunk <= 0)
+            {
+                std::cout << "User: " << username << " Disconnected\n";
+
+                // close connection
+                close(socket);
+
+                // remove client from peerlist
+                {
+                    std::lock_guard<std::mutex> lock(Peer::_peerMutex);
+
+                    // remove from peer list
+                    Peer::_peers.erase(
+                        std::remove_if(Peer::_peers.begin(), Peer::_peers.end(),
+                                       [socket](const PeerConnection &p)
+                                       {
+                                           return p.socket == socket;
+                                       }),
+                        Peer::_peers.end());
+                }
+
+                return;
+            }
+
+            buffer[chunk] = '\0';
+            incomingData.append(buffer);
+
+            firstDelimiterIndex = incomingData.find("|");
+            secondDelimiterIndex = incomingData.find("|", firstDelimiterIndex + 1);
+
+            // check that we got the header
+            if (secondDelimiterIndex != std::string::npos)
+            {
+                break;
+            }
+        }
+
+        // check that we actually got a correct header
+        if (firstDelimiterIndex == std::string::npos || secondDelimiterIndex == std::string::npos)
+        {
+            throw std::runtime_error("Fatal header parsing error");
+            return;
+        }
+
+        // extract header segments
+        std::string payloadType = incomingData.substr(0, firstDelimiterIndex);
+
+        if (payloadType == "MSG")
+        {
+            std::string payloadLengthStr = incomingData.substr(firstDelimiterIndex + 1, secondDelimiterIndex - firstDelimiterIndex - 1);
+            int payloadLength = std::stoi(payloadLengthStr);
+
+            // check if header already contains payload
+            std::string payload = incomingData.substr(secondDelimiterIndex + 1);
+
+            // loop again to get any missing payload data
+            while (payload.length() < payloadLength)
+            {
+                ssize_t chunk = recv(socket, buffer, sizeof(buffer), 0);
+                if (chunk <= 0)
+                    break;
+
+                buffer[chunk] = '\0';
+                payload.append(buffer);
+            }
+
+            // append senders username to broadcast to others
+            std::string broadcastStr = username + ": " + payload;
+
+            broadcastMessage(broadcastStr, socket);
+
+            std::cout << username << ": " << payload << std::endl;
+        }
+    }
+}
+
+void Peer::broadcastMessage(std::string message, int senderSocket)
+{
+    {
+        std::lock_guard<std::mutex> lock(_peerMutex);
+        for (size_t i = 0; i < _peers.size(); i++)
+        {
+            if (_peers[i].socket == senderSocket)
+                continue;
+
+            send(_peers[i].socket, message.c_str(), message.size(), 0);
+        }
+    }
+}
+
+void Peer::userInputLoop()
+{
+    std::string input;
+    while (std::getline(std::cin, input))
+    {
+        std::string payload = input;
+
+        // create messsage header
+        std::string msgHeader = "MSG|" + std::to_string(payload.length()) + "|";
+        std::string fullMsg = msgHeader + payload;
+
+        // send full msg to all peers
+        {
+            std::lock_guard<std::mutex> lock(_peerMutex);
+            for (const auto &peer : _peers)
+            {
+                send(peer.socket, fullMsg.c_str(), fullMsg.size(), 0);
+            }
+        }
+    }
+}
+
+Peer::~Peer()
+{
+    close(_listeningSocket);
+}

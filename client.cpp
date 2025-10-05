@@ -49,6 +49,7 @@ void Client::run()
     std::cout << "Enter a username for this session\n";
     std::string username;
     std::cin >> username;
+    std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
 
     send(_clientSocket, username.c_str(), username.size(), 0);
 
