@@ -261,31 +261,39 @@ void Peer::handlePeerConnection(int socket)
         // extract header segments
         std::string payloadType = incomingData.substr(0, firstDelimiterIndex);
 
+        std::string payloadLengthStr = incomingData.substr(firstDelimiterIndex + 1, secondDelimiterIndex - firstDelimiterIndex - 1);
+        int payloadLength = std::stoi(payloadLengthStr);
+
+        // check if header already contains payload
+        std::string payload = incomingData.substr(secondDelimiterIndex + 1);
+
+        // loop again to get any missing payload data
+        while (payload.length() < payloadLength)
+        {
+            ssize_t chunk = recv(socket, buffer, sizeof(buffer), 0);
+            if (chunk <= 0)
+                break;
+
+            buffer[chunk] = '\0';
+            payload.append(buffer);
+        }
+
         if (payloadType == "MSG")
         {
-            std::string payloadLengthStr = incomingData.substr(firstDelimiterIndex + 1, secondDelimiterIndex - firstDelimiterIndex - 1);
-            int payloadLength = std::stoi(payloadLengthStr);
-
-            // check if header already contains payload
-            std::string payload = incomingData.substr(secondDelimiterIndex + 1);
-
-            // loop again to get any missing payload data
-            while (payload.length() < payloadLength)
-            {
-                ssize_t chunk = recv(socket, buffer, sizeof(buffer), 0);
-                if (chunk <= 0)
-                    break;
-
-                buffer[chunk] = '\0';
-                payload.append(buffer);
-            }
-
             // append senders username to broadcast to others
             std::string broadcastStr = username + ": " + payload;
 
-            broadcastMessage(broadcastStr, socket);
+            // reformat messsage header to relay to the other peers
+            std::string msgHeader = "RELAY|" + std::to_string(broadcastStr.length()) + "|";
+            std::string fullMsg = msgHeader + broadcastStr;
+
+            broadcastMessage(fullMsg, socket);
 
             std::cout << username << ": " << payload << std::endl;
+        }
+        else if (payloadType == "RELAY")
+        {
+            std::cout << payload << std::endl;
         }
     }
 }
@@ -309,11 +317,10 @@ void Peer::userInputLoop()
     std::string input;
     while (std::getline(std::cin, input))
     {
-        std::string payload = input;
 
         // create messsage header
-        std::string msgHeader = "MSG|" + std::to_string(payload.length()) + "|";
-        std::string fullMsg = msgHeader + payload;
+        std::string msgHeader = "MSG|" + std::to_string(input.length()) + "|";
+        std::string fullMsg = msgHeader + input;
 
         // send full msg to all peers
         {
