@@ -3,11 +3,22 @@
 #include <string>
 #include <vector>
 #include <mutex>
+#include <sstream>
 
-struct PeerConnection
+struct ConnectedPeer
 {
     int socket;
     std::string username;
+    std::string ip;
+    int port;
+};
+
+struct DiscoveredPeer
+{
+    std::string username;
+    std::string ip;
+    int port;
+    std::string discoveredFrom;
 };
 
 class Peer
@@ -19,12 +30,14 @@ public:
     void broadcastMessage(std::string message, int senderSocket);
     void userInputLoop();
     void setUsername(std::string username);
+    void sendPeerList(int connectingSocket, std::string senderUsername);
     ~Peer();
 
 private:
     std::string _username;
     int _listeningPort;
     int _listeningSocket;
-    std::vector<PeerConnection> _peers;
+    std::vector<ConnectedPeer> _connectedPeers;
+    std::vector<DiscoveredPeer> _discoveredPeers;
     std::mutex _peerMutex;
 };

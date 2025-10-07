@@ -6,6 +6,7 @@
 #include <arpa/inet.h>
 #include <thread>
 #include <fstream>
+#include <sstream>
 #include <unistd.h>
 #include <algorithm>
 #include <mutex>
@@ -15,6 +16,20 @@
 int main()
 {
     Peer peer;
+
+    std::cout << "\033[34m" << R"(
+/$$   /$$ /$$   /$$ /$$       /$$        /$$$$$$  /$$                   /$$    
+| $$$ | $$| $$  | $$| $$      | $$       /$$__  $$| $$                  | $$    
+| $$$$| $$| $$  | $$| $$      | $$      | $$  \__/| $$$$$$$   /$$$$$$  /$$$$$$  
+| $$ $$ $$| $$  | $$| $$      | $$      | $$      | $$__  $$ |____  $$|_  $$_/  
+| $$  $$$$| $$  | $$| $$      | $$      | $$      | $$  \ $$  /$$$$$$$  | $$    
+| $$\  $$$| $$  | $$| $$      | $$      | $$    $$| $$  | $$ /$$__  $$  | $$ /$$
+| $$ \  $$|  $$$$$$/| $$$$$$$$| $$$$$$$$|  $$$$$$/| $$  | $$|  $$$$$$$  |  $$$$/
+|__/  \__/ \______/ |________/|________/ \______/ |__/  |__/ \_______/   \___/  
+
+)"
+
+              << std::endl;
 
     std::cout << "Enter a username for this session\n";
     std::string username;
@@ -108,27 +123,31 @@ void Peer::startListening(int port)
             throw std::runtime_error("Failed to recieve inital user chunk containg username");
             return;
         }
-
         buffer[chunk] = '\0';
 
         // send your username back to them
         send(peerSocket, _username.c_str(), _username.size(), 0);
 
+        // send peer list
+        sendPeerList(peerSocket, _username);
+
         // create new peer to add to peer list
-        PeerConnection PeerConnection;
-        PeerConnection.socket = peerSocket;
-        PeerConnection.username = buffer;
+        ConnectedPeer connectedPeer;
+        connectedPeer.socket = peerSocket;
+        connectedPeer.username = buffer;
+        connectedPeer.ip = inet_ntoa(peerAddr.sin_addr);
+        connectedPeer.port = ntohs(peerAddr.sin_port);
 
         {
             std::lock_guard<std::mutex> lock(_peerMutex);
-            _peers.push_back(PeerConnection);
+            _connectedPeers.push_back(connectedPeer);
         }
 
         // create per peer thread for handling incoming messages
         std::thread peerThread(&Peer::handlePeerConnection, this, peerSocket);
         peerThread.detach();
 
-        std::cout << "Client: " << PeerConnection.username << " Connected\n";
+        std::cout << "Client: " << connectedPeer.username << " Connected\n";
     }
 }
 
@@ -168,14 +187,18 @@ void Peer::connectToPeer(std::string ip, int port, std::string username)
     buffer[chunk] = '\0';
 
     // add them to peer list
-    PeerConnection newPeer;
+    ConnectedPeer newPeer;
     newPeer.socket = connectingSocket;
     newPeer.username = buffer;
+    newPeer.ip = ip;
+    newPeer.port = port;
 
     {
         std::lock_guard<std::mutex> lock(_peerMutex);
-        _peers.push_back(newPeer);
+        _connectedPeers.push_back(newPeer);
     }
+
+    sendPeerList(connectingSocket, username);
 
     // create client thread
     std::thread receivingThread(&Peer::handlePeerConnection, this, connectingSocket);
@@ -191,7 +214,7 @@ void Peer::handlePeerConnection(int socket)
     std::string username;
     {
         std::lock_guard<std::mutex> lock(Peer::_peerMutex);
-        for (const auto &peer : _peers)
+        for (const auto &peer : _connectedPeers)
         {
             if (peer.socket == socket)
             {
@@ -226,13 +249,13 @@ void Peer::handlePeerConnection(int socket)
                     std::lock_guard<std::mutex> lock(Peer::_peerMutex);
 
                     // remove from peer list
-                    Peer::_peers.erase(
-                        std::remove_if(Peer::_peers.begin(), Peer::_peers.end(),
-                                       [socket](const PeerConnection &p)
+                    Peer::_connectedPeers.erase(
+                        std::remove_if(Peer::_connectedPeers.begin(), Peer::_connectedPeers.end(),
+                                       [socket](const ConnectedPeer &p)
                                        {
                                            return p.socket == socket;
                                        }),
-                        Peer::_peers.end());
+                        Peer::_connectedPeers.end());
                 }
 
                 return;
@@ -295,6 +318,43 @@ void Peer::handlePeerConnection(int socket)
         {
             std::cout << payload << std::endl;
         }
+        else if (payloadType == "PEERLIST")
+        {
+
+            // split by semi colon ;
+            std::stringstream ss(payload);
+            std::string peerEntry;
+
+            while (std::getline(ss, peerEntry, ';'))
+            {
+                if (peerEntry.empty())
+                    continue;
+
+                std::stringstream peerStream(peerEntry);
+                std::string username, ip, portStr, senderUsername;
+                std::getline(peerStream, username, ',');
+                std::getline(peerStream, ip, ',');
+                std::getline(peerStream, portStr, ',');
+                std::getline(peerStream, senderUsername, ',');
+                int port = std::stoi(portStr);
+
+                DiscoveredPeer discoveredPeer;
+                discoveredPeer.ip = ip;
+                discoveredPeer.port = port;
+                discoveredPeer.username = username;
+                discoveredPeer.discoveredFrom = senderUsername;
+
+                {
+                    std::lock_guard<std::mutex> lock(_peerMutex);
+                    _discoveredPeers.push_back(discoveredPeer);
+                }
+
+                std::cout << "Discovered peer: " << username << " at "
+                          << ip << ":" << port << " from " << senderUsername << std::endl;
+            }
+
+            // process each section and extract peer info
+        }
     }
 }
 
@@ -302,12 +362,12 @@ void Peer::broadcastMessage(std::string message, int senderSocket)
 {
     {
         std::lock_guard<std::mutex> lock(_peerMutex);
-        for (size_t i = 0; i < _peers.size(); i++)
+        for (size_t i = 0; i < _connectedPeers.size(); i++)
         {
-            if (_peers[i].socket == senderSocket)
+            if (_connectedPeers[i].socket == senderSocket)
                 continue;
 
-            send(_peers[i].socket, message.c_str(), message.size(), 0);
+            send(_connectedPeers[i].socket, message.c_str(), message.size(), 0);
         }
     }
 }
@@ -325,12 +385,32 @@ void Peer::userInputLoop()
         // send full msg to all peers
         {
             std::lock_guard<std::mutex> lock(_peerMutex);
-            for (const auto &peer : _peers)
+            for (const auto &peer : _connectedPeers)
             {
                 send(peer.socket, fullMsg.c_str(), fullMsg.size(), 0);
             }
         }
     }
+}
+
+void Peer::sendPeerList(int connectingSocket, std::string senderUsername)
+{
+    std::string peerListData;
+    {
+        std::lock_guard<std::mutex> lock(_peerMutex);
+        for (const auto &peer : _connectedPeers)
+        {
+            peerListData += peer.username + "," +
+                            peer.ip + "," +
+                            std::to_string(peer.port) + "," +
+                            senderUsername + ";";
+        }
+    }
+
+    std::string peerHeader = "PEERLIST|" +
+                             std::to_string(peerListData.length()) + "|" +
+                             peerListData;
+    send(connectingSocket, peerHeader.c_str(), peerHeader.size(), 0);
 }
 
 Peer::~Peer()
