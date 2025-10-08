@@ -42,6 +42,7 @@ int main()
     int port;
     std::cin >> port;
     std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+    peer.setListeningPort(port);
 
     std::cout << "Connect to peer? (y/n): " << std::endl;
     std::string choice;
@@ -71,6 +72,11 @@ int main()
 void Peer::setUsername(std::string username)
 {
     Peer::_username = username;
+}
+
+void Peer::setListeningPort(int port)
+{
+    _listeningPort = port;
 }
 
 void Peer::startListening(int port)
@@ -320,40 +326,7 @@ void Peer::handlePeerConnection(int socket)
         }
         else if (payloadType == "PEERLIST")
         {
-
-            // split by semi colon ;
-            std::stringstream ss(payload);
-            std::string peerEntry;
-
-            while (std::getline(ss, peerEntry, ';'))
-            {
-                if (peerEntry.empty())
-                    continue;
-
-                std::stringstream peerStream(peerEntry);
-                std::string username, ip, portStr, senderUsername;
-                std::getline(peerStream, username, ',');
-                std::getline(peerStream, ip, ',');
-                std::getline(peerStream, portStr, ',');
-                std::getline(peerStream, senderUsername, ',');
-                int port = std::stoi(portStr);
-
-                DiscoveredPeer discoveredPeer;
-                discoveredPeer.ip = ip;
-                discoveredPeer.port = port;
-                discoveredPeer.username = username;
-                discoveredPeer.discoveredFrom = senderUsername;
-
-                {
-                    std::lock_guard<std::mutex> lock(_peerMutex);
-                    _discoveredPeers.push_back(discoveredPeer);
-                }
-
-                std::cout << "Discovered peer: " << username << " at "
-                          << ip << ":" << port << " from " << senderUsername << std::endl;
-            }
-
-            // process each section and extract peer info
+            parsePeerList(payload);
         }
     }
 }
@@ -411,6 +384,57 @@ void Peer::sendPeerList(int connectingSocket, std::string senderUsername)
                              std::to_string(peerListData.length()) + "|" +
                              peerListData;
     send(connectingSocket, peerHeader.c_str(), peerHeader.size(), 0);
+}
+
+void Peer::parsePeerList(std::string payload)
+{
+    // split by semi colon ;
+    std::stringstream ss(payload);
+    std::string peerEntry;
+
+    while (std::getline(ss, peerEntry, ';'))
+    {
+        if (peerEntry.empty())
+            continue;
+
+        std::stringstream peerStream(peerEntry);
+        std::string username, ip, portStr, senderUsername;
+        std::getline(peerStream, username, ',');
+        std::getline(peerStream, ip, ',');
+        std::getline(peerStream, portStr, ',');
+        std::getline(peerStream, senderUsername, ',');
+        int port = std::stoi(portStr);
+
+        DiscoveredPeer discoveredPeer;
+        discoveredPeer.ip = ip;
+        discoveredPeer.port = port;
+        discoveredPeer.username = username;
+        discoveredPeer.discoveredFrom = senderUsername;
+
+        // check if the peer is yourself
+        if (discoveredPeer.username == Peer::_username && discoveredPeer.port == Peer::_listeningPort)
+            continue;
+
+        // check if peer is already in list
+        if (std::find_if(_discoveredPeers.begin(), _discoveredPeers.end(),
+                         [&discoveredPeer](const DiscoveredPeer &p)
+                         {
+                             return p.username == discoveredPeer.username &&
+                                    p.ip == discoveredPeer.ip &&
+                                    p.port == discoveredPeer.port;
+                         }) != _discoveredPeers.end())
+        {
+            continue;
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(_peerMutex);
+            _discoveredPeers.push_back(discoveredPeer);
+        }
+
+        std::cout << "Discovered peer: " << username << " at "
+                  << ip << ":" << port << " from " << senderUsername << std::endl;
+    }
 }
 
 Peer::~Peer()

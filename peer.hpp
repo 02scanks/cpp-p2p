@@ -30,7 +30,9 @@ public:
     void broadcastMessage(std::string message, int senderSocket);
     void userInputLoop();
     void setUsername(std::string username);
+    void setListeningPort(int port);
     void sendPeerList(int connectingSocket, std::string senderUsername);
+    void parsePeerList(std::string payload);
     ~Peer();
 
 private:
