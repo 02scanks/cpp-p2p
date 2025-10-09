@@ -13,62 +13,6 @@
 #include <string>
 #include <algorithm>
 
-int main()
-{
-    Peer peer;
-
-    std::cout << "\033[34m" << R"(
-/$$   /$$ /$$   /$$ /$$       /$$        /$$$$$$  /$$                   /$$    
-| $$$ | $$| $$  | $$| $$      | $$       /$$__  $$| $$                  | $$    
-| $$$$| $$| $$  | $$| $$      | $$      | $$  \__/| $$$$$$$   /$$$$$$  /$$$$$$  
-| $$ $$ $$| $$  | $$| $$      | $$      | $$      | $$__  $$ |____  $$|_  $$_/  
-| $$  $$$$| $$  | $$| $$      | $$      | $$      | $$  \ $$  /$$$$$$$  | $$    
-| $$\  $$$| $$  | $$| $$      | $$      | $$    $$| $$  | $$ /$$__  $$  | $$ /$$
-| $$ \  $$|  $$$$$$/| $$$$$$$$| $$$$$$$$|  $$$$$$/| $$  | $$|  $$$$$$$  |  $$$$/
-|__/  \__/ \______/ |________/|________/ \______/ |__/  |__/ \_______/   \___/  
-
-)"
-
-              << std::endl;
-
-    std::cout << "Enter a username for this session\n";
-    std::string username;
-    std::cin >> username;
-    std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
-
-    peer.setUsername(username);
-
-    std::cout << "Enter a port to listen on\n";
-    int port;
-    std::cin >> port;
-    std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
-    peer.setListeningPort(port);
-
-    std::cout << "Connect to peer? (y/n): " << std::endl;
-    std::string choice;
-    std::getline(std::cin, choice);
-    if (choice == "y")
-    {
-        std::cout << "Enter peer IP: ";
-        std::string ip;
-        std::getline(std::cin, ip);
-
-        std::cout << "Enter peer port: ";
-        int peerPort;
-        std::cin >> peerPort;
-        std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
-
-        peer.connectToPeer(ip, peerPort, username);
-    }
-
-    std::thread listeningThread(&Peer::startListening, &peer, port);
-    listeningThread.detach();
-
-    peer.userInputLoop();
-
-    return 0;
-}
-
 void Peer::setUsername(std::string username)
 {
     Peer::_username = username;
@@ -153,7 +97,10 @@ void Peer::startListening(int port)
         std::thread peerThread(&Peer::handlePeerConnection, this, peerSocket);
         peerThread.detach();
 
-        std::cout << "Client: " << connectedPeer.username << " Connected\n";
+        if (_messageCallback)
+        {
+            _messageCallback("Client: " + connectedPeer.username + " Connected\n");
+        }
     }
 }
 
@@ -245,8 +192,11 @@ void Peer::handlePeerConnection(int socket)
             // users disconnected
             if (chunk <= 0)
             {
-                std::cout << "User: " << username << " Disconnected\n";
-
+                
+                if (_messageCallback)
+                {
+                    _messageCallback("Client: " + username + " Disconnected\n");
+                }
                 // close connection
                 close(socket);
 
@@ -318,11 +268,17 @@ void Peer::handlePeerConnection(int socket)
 
             broadcastMessage(fullMsg, socket);
 
-            std::cout << username << ": " << payload << std::endl;
+            if (_messageCallback)
+            {
+                _messageCallback(username + ": " + payload);
+            }
         }
         else if (payloadType == "RELAY")
         {
-            std::cout << payload << std::endl;
+            if (_messageCallback)
+            {
+                _messageCallback(payload);
+            }
         }
         else if (payloadType == "PEERLIST")
         {
@@ -435,6 +391,28 @@ void Peer::parsePeerList(std::string payload)
         std::cout << "Discovered peer: " << username << " at "
                   << ip << ":" << port << " from " << senderUsername << std::endl;
     }
+}
+
+void Peer::sendMessage(std::string message)
+{
+
+    // create messsage header
+    std::string msgHeader = "MSG|" + std::to_string(message.length()) + "|";
+    std::string fullMsg = msgHeader + message;
+
+    // send full msg to all peers
+    {
+        std::lock_guard<std::mutex> lock(_peerMutex);
+        for (const auto &peer : _connectedPeers)
+        {
+            send(peer.socket, fullMsg.c_str(), fullMsg.size(), 0);
+        }
+    }
+}
+
+void Peer::setMessageCallback(std::function<void(std::string)> callback)
+{
+    _messageCallback = callback;
 }
 
 Peer::~Peer()

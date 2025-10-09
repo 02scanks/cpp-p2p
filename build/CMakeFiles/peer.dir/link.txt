@@ -1,0 +1,1 @@
+/usr/bin/c++ -Wl,--dependency-file=CMakeFiles/peer.dir/link.d CMakeFiles/peer.dir/peer.cpp.o -o peer  _deps/ftxui-build/libftxui-screen.a _deps/ftxui-build/libftxui-dom.a _deps/ftxui-build/libftxui-component.a -lpthread _deps/ftxui-build/libftxui-dom.a _deps/ftxui-build/libftxui-screen.a

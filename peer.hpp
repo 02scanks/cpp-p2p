@@ -4,6 +4,7 @@
 #include <vector>
 #include <mutex>
 #include <sstream>
+#include <functional>
 
 struct ConnectedPeer
 {
@@ -33,6 +34,8 @@ public:
     void setListeningPort(int port);
     void sendPeerList(int connectingSocket, std::string senderUsername);
     void parsePeerList(std::string payload);
+    void sendMessage(std::string message);
+    void setMessageCallback(std::function<void(std::string)> callback);
     ~Peer();
 
 private:
@@ -42,4 +45,5 @@ private:
     std::vector<ConnectedPeer> _connectedPeers;
     std::vector<DiscoveredPeer> _discoveredPeers;
     std::mutex _peerMutex;
+    std::function<void(std::string)> _messageCallback;
 };
