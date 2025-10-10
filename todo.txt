@@ -1,7 +1,1 @@
-- Integrate FTXUI terminal GUI
-  - Install/setup FTXUI library DONE
-  - Create main chat window (scrollable) 
-  - Add peer list panel on the side
-  - Add input box at the bottom
-  - Wire up with existing peer messaging system
-
+- add feature so peer lists get rebroadcasted to everyone when a new user joins

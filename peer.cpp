@@ -390,6 +390,13 @@ void Peer::parsePeerList(std::string payload)
 
         std::cout << "Discovered peer: " << username << " at "
                   << ip << ":" << port << " from " << senderUsername << std::endl;
+
+        // Notify GUI via callback
+        if (_discoveredPeerCallback)
+        {
+            std::string peerInfo = username + " (" + ip + ":" + std::to_string(port) + ")";
+            _discoveredPeerCallback(peerInfo);
+        }
     }
 }
 
@@ -413,6 +420,22 @@ void Peer::sendMessage(std::string message)
 void Peer::setMessageCallback(std::function<void(std::string)> callback)
 {
     _messageCallback = callback;
+}
+
+void Peer::setDiscoveredPeerCallback(std::function<void(std::string)> callback){
+    _discoveredPeerCallback = callback;
+}
+
+std::vector<ConnectedPeer> Peer::getConnectedPeers()
+{
+    std::lock_guard<std::mutex> lock(_peerMutex);
+    return _connectedPeers;
+}
+
+std::vector<DiscoveredPeer> Peer::getDiscoveredPeers()
+{
+    std::lock_guard<std::mutex> lock(_peerMutex);
+    return _discoveredPeers;
 }
 
 Peer::~Peer()

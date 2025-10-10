@@ -66,13 +66,20 @@ int main()
     std::thread listeningThread(&Peer::startListening, &peer, port);
     listeningThread.detach();
 
-    // set callback
-    peer.setMessageCallback([&](std::string msg){
-        messages.push_back(msg);
-    });
-
     // CREATE GUI
     std::string inputText = "";
+    auto screen = ScreenInteractive::Fullscreen();
+
+    // set callbacks (after screen is created so we can trigger refresh)
+    peer.setMessageCallback([&](std::string msg){
+        messages.push_back(msg);
+        screen.PostEvent(Event::Custom);  // Force GUI refresh
+    });
+
+    peer.setDiscoveredPeerCallback([&](std::string peerInfo){
+        peerList.push_back(peerInfo);
+        screen.PostEvent(Event::Custom);  // Force GUI refresh
+    });
 
     auto chatWindow = Renderer([&] {
           std::vector<Element> messageElements;
@@ -107,12 +114,31 @@ int main()
 
     auto peerWindow = Renderer([&]{
         std::vector<Element> peerElements;
-        peerElements.push_back(text("Connected Peers") | bold);
-        for(const auto& peer : peerList) {
-            peerElements.push_back(text(peer));
+
+        // Show connected peers
+        peerElements.push_back(text("=== Connected ===") | bold | color(Color::Green));
+        auto connectedPeers = peer.getConnectedPeers();
+        if (connectedPeers.empty()) {
+            peerElements.push_back(text("  (none)") | dim);
+        } else {
+            for(const auto& p : connectedPeers) {
+                peerElements.push_back(text("  " + p.username + " (" + p.ip + ":" + std::to_string(p.port) + ")"));
+            }
         }
 
-        return vbox(peerElements) | border | size(WIDTH, EQUAL, 20);
+        peerElements.push_back(text(""));
+
+        // Show discovered peers
+        peerElements.push_back(text("=== Discovered ===") | bold | color(Color::Yellow));
+        if (peerList.empty()) {
+            peerElements.push_back(text("  (none)") | dim);
+        } else {
+            for(const auto& p : peerList) {
+                peerElements.push_back(text("  " + p));
+            }
+        }
+
+        return vbox(peerElements) | border | size(WIDTH, EQUAL, 30);
     });
 
     auto mainLayout = Container::Horizontal({
@@ -126,9 +152,6 @@ int main()
             peerWindow->Render()
         });
     });
-
-    
-    auto screen = ScreenInteractive::Fullscreen();
 
     // GUI LOOP
     screen.Loop(mainLayoutRenderer);

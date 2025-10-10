@@ -36,6 +36,9 @@ public:
     void parsePeerList(std::string payload);
     void sendMessage(std::string message);
     void setMessageCallback(std::function<void(std::string)> callback);
+    void setDiscoveredPeerCallback(std::function<void(std::string)> callback);
+    std::vector<ConnectedPeer> getConnectedPeers();
+    std::vector<DiscoveredPeer> getDiscoveredPeers();
     ~Peer();
 
 private:
@@ -46,4 +49,5 @@ private:
     std::vector<DiscoveredPeer> _discoveredPeers;
     std::mutex _peerMutex;
     std::function<void(std::string)> _messageCallback;
+    std::function<void(std::string)> _discoveredPeerCallback;
 };
