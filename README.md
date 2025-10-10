@@ -2,6 +2,11 @@
 
 A lightweight, decentralized peer-to-peer chat application written in C++ using raw TCP sockets. Each peer acts as both a client and server, enabling direct communication without a central server.
 
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/a3e0affd-dbd2-4677-9c46-585eae1bb6b1" width="470" height="515" alt="screenshot" />
+</p>
+
+
 ## Features
 
 ### Current Implementation
