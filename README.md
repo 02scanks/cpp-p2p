@@ -1,6 +1,6 @@
-# C++ P2P Chat
+# NullChat - C++ P2P Chat
 
-A lightweight, decentralized peer-to-peer chat application written in C++ using raw TCP sockets. Each peer acts as both a client and server, enabling direct communication without a central server.
+A lightweight, decentralized peer-to-peer chat application written in C++ using raw TCP sockets with a modern terminal GUI. Each peer acts as both a client and server, enabling direct communication without a central server.
 
 <p align="center">
   <img src="https://github.com/user-attachments/assets/a3e0affd-dbd2-4677-9c46-585eae1bb6b1" width="470" height="515" alt="screenshot" />
@@ -11,25 +11,28 @@ A lightweight, decentralized peer-to-peer chat application written in C++ using 
 
 ### Current Implementation
 
+- **Modern Terminal GUI** - Full-screen FTXUI-based interface with real-time chat and peer display
+- **Gossip-Based Peer Discovery** - Automatically discover peers through network gossip protocol
 - **True P2P Architecture** - Every peer can both accept incoming connections and connect to other peers
 - **Multi-Peer Support** - Connect to multiple peers simultaneously with automatic message relaying
 - **Username-Based Identity** - Each peer has a unique username for the session
 - **Thread-Safe Communication** - Mutex-protected peer list for concurrent access
-- **Custom Message Protocol** - Header-based protocol with type identification and length-prefixing
+- **Custom Message Protocol** - Header-based protocol with type identification and length-prefixing (MSG, RELAY, PEERLIST)
 - **Automatic Message Relay** - Messages are automatically forwarded to all connected peers
 - **Clean Disconnection Handling** - Peers are properly removed from the network on disconnect
+- **Dual Peer View** - GUI displays both directly connected peers and discovered peers separately
 
 ## Architecture
 
 ### Threading Model
 
 ```
-Main Thread
+Main Thread (GUI event loop)
 ├─ Listening Thread (accepts new peer connections)
 │  ├─ Peer Handler Thread 1 (receives messages from peer 1)
 │  ├─ Peer Handler Thread 2 (receives messages from peer 2)
 │  └─ ...
-└─ User Input Loop (reads from stdin and broadcasts)
+└─ GUI renders on callbacks from peer threads
 ```
 
 ### Message Protocol
@@ -46,7 +49,13 @@ RELAY|<payload_length>|<username>: <payload>
 Example: RELAY|11|john: hello
 ```
 
-This dual-type system prevents duplicate username prefixing when messages are relayed through intermediate peers.
+**Peer Discovery (gossip protocol):**
+```
+PEERLIST|<payload_length>|<username>,<ip>,<port>,<discoverer>;...
+Example: PEERLIST|32|alice,192.168.1.5,8080,bob;
+```
+
+This protocol enables automatic peer discovery through network gossip, with duplicate detection and self-exclusion.
 
 ### Connection Flow
 
@@ -55,29 +64,40 @@ This dual-type system prevents duplicate username prefixing when messages are re
 3. **Username Exchange:**
    - Peer B sends username → Peer A receives
    - Peer A sends username → Peer B receives
-4. **Bidirectional Communication:** Both peers can now send/receive messages
-5. **Multi-Peer:** If Peer C connects to Peer A, messages are relayed between all peers
+4. **Peer List Exchange:**
+   - Peer A sends list of known peers to Peer B
+   - Peer B adds discovered peers to its discovery list
+5. **Bidirectional Communication:** Both peers can now send/receive messages
+6. **Multi-Peer:** If Peer C connects to Peer A, messages are relayed between all peers
+7. **Gossip Discovery:** Peer B can see Peer C in its discovered peers list and connect if desired
 
 ## Building
 
 ### Prerequisites
 
-- C++11 or later
+- C++17 or later
+- CMake 3.14 or later
 - POSIX-compliant system (Linux/macOS)
 - Standard libraries: `pthread`, `socket`
+- FTXUI library (automatically fetched via CMake)
 
 ### Compile
 
 ```bash
-g++ -std=c++11 -pthread peer.cpp -o p2p
+mkdir build
+cd build
+cmake ..
+make
 ```
+
+This will create the `gui` executable in the build directory.
 
 ## Usage
 
 ### Starting a Peer
 
 ```bash
-./p2p
+./build/gui
 ```
 
 You'll be prompted to:
@@ -85,11 +105,15 @@ You'll be prompted to:
 2. Enter a port to listen on
 3. Choose whether to connect to an existing peer
 
+Once connected, the terminal GUI will launch showing:
+- **Left Panel**: Chat window with message history and input box
+- **Right Panel**: Connected peers (green) and discovered peers (yellow)
+
 ### Example: Two-Peer Chat
 
 **Terminal 1 (Alice):**
 ```
-./p2p
+./build/gui
 Enter a username for this session
 alice
 Enter a port to listen on
@@ -98,11 +122,12 @@ Connect to peer? (y/n):
 n
 Listening Initialized
 Awaiting Connections....
+[GUI launches]
 ```
 
 **Terminal 2 (Bob):**
 ```
-./p2p
+./build/gui
 Enter a username for this session
 bob
 Enter a port to listen on
@@ -114,11 +139,12 @@ Enter peer port: 8080
 Connection Succesful
 Listening Initialized
 Awaiting Connections....
+[GUI launches]
 ```
 
-Now both Alice and Bob can type messages and they'll be relayed to each other.
+Both Alice and Bob can now type messages in their GUI input boxes and press Enter to send.
 
-### Example: Three-Peer Network
+### Example: Three-Peer Network with Discovery
 
 **Terminal 1 (Alice - Hub):**
 ```
@@ -140,13 +166,27 @@ Connect: y → 127.0.0.1:8080
 
 All three peers can now communicate. Messages sent by Bob are relayed through Alice to Charlie and vice versa.
 
+**Peer Discovery in Action:**
+- Bob's GUI will show Alice as "Connected" and Charlie as "Discovered"
+- Charlie's GUI will show Alice as "Connected" and Bob as "Discovered"
+- Bob and Charlie can manually connect to each other if desired, creating a mesh network
+
 ## Technical Details
+
+### GUI Architecture
+
+- Built with FTXUI library for modern terminal UI
+- Callback-based event system for real-time updates
+- Message callbacks trigger GUI refresh via `screen.PostEvent()`
+- Separate rendering for chat window and peer list panels
+- Input handling with Enter key detection for message sending
 
 ### Thread Safety
 
 - Peer list is protected with `std::mutex`
 - All read/write operations acquire locks before accessing shared data
 - Peers are added to the list before spawning handler threads to avoid race conditions
+- GUI callbacks are thread-safe with event posting mechanism
 
 ### Socket Management
 
@@ -160,7 +200,17 @@ The header-based protocol handles chunked TCP data:
 1. Read data until two `|` delimiters are found
 2. Parse header: `TYPE|LENGTH|`
 3. Extract payload (may span multiple recv() calls)
-4. Process based on type (MSG vs RELAY)
+4. Process based on type:
+   - **MSG**: Direct message from user input, relay to other peers
+   - **RELAY**: Already-relayed message, display only
+   - **PEERLIST**: Gossip peer discovery data, parse and add to discovered peers
+
+### Peer Discovery System
+
+- **Gossip Protocol**: When peers connect, they exchange lists of known peers
+- **Automatic Deduplication**: Checks for duplicate peers before adding to discovered list
+- **Self-Exclusion**: Filters out own peer information from discovery
+- **Source Tracking**: Each discovered peer records who shared the information
 
 ## Project Goals
 
@@ -171,35 +221,44 @@ The header-based protocol handles chunked TCP data:
 - [x] Username exchange protocol
 - [x] Thread-safe peer management
 - [x] Clean disconnection handling
-- [x] Message protocol with type discrimination
+- [x] Message protocol with type discrimination (MSG, RELAY, PEERLIST)
+- [x] Gossip-based peer discovery mechanism
+- [x] Terminal GUI interface (FTXUI)
+- [x] Real-time peer list visualization
+- [x] Callback-based event system
 
-### In Progress / Planned
+### Planned
 
+- [ ] Direct connection to discovered peers from GUI
 - [ ] File transfer support
 - [ ] Encryption (TLS/SSL)
-- [ ] Peer discovery mechanism
 - [ ] NAT traversal
-- [ ] Message history
-- [ ] GUI interface
+- [ ] Message history persistence
 - [ ] Group chat rooms
 - [ ] Authentication/authorization
+- [ ] Peer list rebroadcasting on new peer join
 
 ## Known Limitations
 
 - No encryption - all messages sent in plaintext
-- No peer discovery - must manually enter IP addresses
+- Manual connection required - discovered peers shown but must be connected manually
 - No NAT traversal - requires direct network connectivity or port forwarding
-- Single-threaded user input - blocking on stdin
-- No message persistence
+- No message persistence or history
 - Fixed 1024-byte buffer size
+- Peer list updates only on initial connection (not rebroadcasted on network changes)
 
 ## File Structure
 
 ```
 cpp-p2p/
-├── peer.hpp       # Peer class declaration and PeerConnection struct
-├── peer.cpp       # Implementation and main()
-└── README.md      # This file
+├── peer.hpp                # Peer class declaration, ConnectedPeer and DiscoveredPeer structs
+├── peer.cpp                # Peer implementation with networking and protocol logic
+├── gui.cpp                 # FTXUI-based terminal GUI application (main entry point)
+├── CMakeLists.txt          # CMake build configuration
+├── README.md               # This file
+├── todo.txt                # Development task list
+└── build/                  # Build directory (created by CMake)
+    └── gui                 # Compiled executable
 ```
 
 ## License
